@@ -306,6 +306,7 @@
     const m = (e && (e.message || e.error_description || e.msg)) || String(e);
     if (/Database error saving new user|FAM_NOT_ALLOWED|FAM_WRONG_ROLE/i.test(m)) return 'Този имейл не е одобрен за избрания профил. Провери имейла и дали си избрал правилния профил.';
     if (/Invalid login credentials/i.test(m)) return 'Грешен имейл или парола.';
+    if (/missing email/i.test(m)) return 'Попълни имейла.';
     if (/Email not confirmed/i.test(m)) return 'Имейлът още не е потвърден. Отвори писмото от Supabase и натисни линка.';
     if (/already registered|already been registered/i.test(m)) return 'Този имейл вече има профил. Влез с него.';
     if (/Password should be at least/i.test(m)) return 'Паролата трябва да е поне 6 символа.';
@@ -423,7 +424,7 @@
           <span class="avatar lg">${u.kid ? esc(u.kid.avatar) : '👨‍👩‍👧‍👧'}</span><span class="name">${u.kid ? esc(u.kid.name) : 'Родител'}</span></button>`).join('')}</div>
         <button type="button" class="btn plain block" style="margin-top:14px" data-act="exit-demo">Излез от демото</button>`
       : `<form class="card stack" style="margin-top:18px;text-align:left" data-form="login">
-        <label class="field" for="lEmail">Имейл<input class="input" id="lEmail" type="email" autocomplete="email" required></label>
+        <label class="field" for="lEmail">Имейл<input class="input" id="lEmail" type="email" autocomplete="email" autocapitalize="none" value="${esc(S.lastEmail || '')}" required></label>
         <label class="field" for="lPass">Парола<input class="input" id="lPass" type="password" autocomplete="current-password" required></label>
         ${S.error ? `<p class="err">${esc(S.error)}</p>` : ''}
         <button type="submit" class="btn block" ${S.busy ? 'disabled' : ''}>${S.busy ? 'Влизане…' : 'Вход'}</button>
@@ -445,7 +446,7 @@
         ${isP ? `<label class="field" for="rName">Как да те наричат децата?<input class="input" id="rName" placeholder="напр. Мама или Тате" required></label>` : ''}
         <p class="note">🔒 ${isP ? 'Профил „Родител“ може да се създаде само с одобрените имейли на родителите.' : `Профилът на ${esc(kid ? kid.name : '')} може да се създаде само с нейния имейл.`}</p>
         <p class="label" style="margin-top:6px">2 · Вход</p>
-        <label class="field" for="rEmail">Имейл<input class="input" id="rEmail" type="email" autocomplete="email" required></label>
+        <label class="field" for="rEmail">Имейл<input class="input" id="rEmail" type="email" autocomplete="email" autocapitalize="none" required></label>
         <label class="field" for="rPass">Парола<input class="input" id="rPass" type="password" autocomplete="new-password" minlength="6" required placeholder="поне 6 символа"></label>
         ${S.error ? `<p class="err">${esc(S.error)}</p>` : ''}
         <button type="submit" class="btn block" ${S.busy ? 'disabled' : ''}>${S.busy ? 'Създаване…' : 'Създай профил'}</button>
@@ -1054,8 +1055,10 @@
     const kind = f.dataset.form;
     try {
       if (kind === 'login') {
-        S.busy = true; S.error = null; render();
-        try { await S.store.signIn($('#lEmail').value.trim(), $('#lPass').value); } catch (e) { S.busy = false; S.error = friendly(e); return render(); }
+        const email = $('#lEmail').value.trim(); const pass = $('#lPass').value;
+        if (!email || !pass) return toast('Попълни имейл и парола');
+        S.busy = true; S.error = null; S.lastEmail = email; render();
+        try { await S.store.signIn(email, pass); } catch (e) { S.busy = false; S.error = friendly(e); render(); if ($('#lEmail')) $('#lEmail').value = email; return; }
         S.busy = false; return afterLogin();
       }
       if (kind === 'register') {
