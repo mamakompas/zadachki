@@ -1,5 +1,5 @@
 /* Семейни задачи — service worker: офлайн кеш (network-first) + push известия */
-const CACHE = 'fam-chores-v2';
+const CACHE = 'fam-chores-v3';
 
 self.addEventListener('install', () => self.skipWaiting());
 self.addEventListener('activate', (e) => {
@@ -33,8 +33,8 @@ self.addEventListener('push', (e) => {
     body: data.body || '',
     tag: data.tag || 'fam',
     renotify: true,
-    icon: 'icons/icon-192.png',
-    badge: 'icons/icon-192.png',
+    icon: 'icon-192.png',
+    badge: 'icon-192.png',
     data: { url: './' }
   }));
 });

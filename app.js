@@ -707,7 +707,7 @@
       const j = sub.toJSON();
       await S.store.savePushSub({ endpoint: j.endpoint, p256dh: j.keys.p256dh, auth: j.keys.auth });
       pushState = 'on'; render(); toast('🔔 Известията са включени');
-      reg.showNotification('Задачки', { body: 'Известията работят! 🎉', icon: 'icons/icon-192.png' }).catch(() => {});
+      reg.showNotification('Задачки', { body: 'Известията работят! 🎉', icon: 'icon-192.png' }).catch(() => {});
     } catch (e) { toast('Неуспешно: ' + friendly(e)); }
   }
   async function pushOff(quiet) {
