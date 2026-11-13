@@ -73,6 +73,9 @@
       async ledger(kidId) { let q = sb.from('fam_ledger').select('*').order('created_at', { ascending: false }); if (kidId) q = q.eq('kid_id', kidId); return ok(await q); },
       async setMyTask(id, done) { return ok(await sb.rpc('fam_set_my_task', { p_task: id, p_done: done })); },
       async updateTask(id, patch) { ok(await sb.from('fam_tasks').update(patch).eq('id', id)); },
+      async skipDay(kidId, day, skip) {
+        ok(await sb.from('fam_tasks').update({ status: skip ? 'skipped' : 'pending' }).eq('kid_id', kidId).eq('day', day).eq('status', skip ? 'pending' : 'skipped'));
+      },
       async addTasks(rows) { ok(await sb.from('fam_tasks').upsert(rows, { onConflict: 'kid_id,day,template_id', ignoreDuplicates: true })); },
       async deleteTask(id) { ok(await sb.from('fam_tasks').delete().eq('id', id)); },
       async saveTemplate(t) { return ok(await sb.from('fam_templates').upsert(t).select().single()); },
@@ -188,6 +191,11 @@
         Object.assign(t, { status: done ? 'done' : 'pending', done_at: done ? new Date().toISOString() : null }); save(); return delay(t);
       },
       async updateTask(id, patch) { if (!isParent()) deny(); Object.assign(db.tasks.find((x) => x.id === id), patch); save(); },
+      async skipDay(kidId, day, skip) {
+        if (!isParent()) deny();
+        db.tasks.forEach((t) => { if (t.kid_id === kidId && t.day === day && t.status === (skip ? 'pending' : 'skipped')) t.status = skip ? 'skipped' : 'pending'; });
+        save();
+      },
       async addTasks(rows) {
         if (!isParent()) deny();
         for (const r of rows) {
@@ -490,7 +498,7 @@
         : list.length && left === 0 ? `<div class="alert ok"><span class="big" aria-hidden="true">🏆</span>Супер ден! Всичко е свършено.</div>` : ''}
       ${w.atRisk > 0 ? `<div class="alert gold"><span class="big" aria-hidden="true">🪙</span>Ако не свършиш задачите днес, губиш ${eur(w.atRisk)} от седмицата.</div>` : ''}
       <p class="label">📋 Задачите ми днес</p>
-      ${list.length ? `<div class="stack">${list.map((t) => taskHTML(t)).join('')}</div>` : '<div class="card empty"><div class="big">🌤️</div>Днес нямаш задачи. Почивка!</div>'}
+      ${list.length ? `<div class="stack">${list.map((t) => taskHTML(t)).join('')}</div>` : (S.tasks.some((t) => t.kid_id === k.id && t.status === 'skipped') ? '<div class="card empty"><div class="big">🏕️</div>Днес си освободена от задачите. Приятно прекарване!</div>' : '<div class="card empty"><div class="big">🌤️</div>Днес нямаш задачи. Почивка!</div>')}
       ${pushBanner()}
       <p class="muted small" style="margin-top:14px">Докосни задача, за да я отметнеш. 🔴 Червено = още не е свършена.</p>`;
   }
@@ -558,6 +566,9 @@
           <div class="progress" style="margin-bottom:12px"><i style="width:${act.length ? done / act.length * 100 : 0}%"></i></div>
           ${list.length ? `<div class="stack">${list.map((t) => taskHTML(t, true)).join('')}</div>` : '<p class="muted small center">Няма задачи за този ден.</p>'}
           <button type="button" class="btn sm block" style="margin-top:12px;background:${k.color};box-shadow:0 4px 0 color-mix(in srgb, ${k.color} 60%, #000)" data-add="${k.id}">+ Добави задачи за ${esc(k.name)}</button>
+          ${list.some((t) => t.status === 'pending')
+            ? `<button type="button" class="btn sm plain block" style="margin-top:8px" data-away="${k.id}">🏕️ ${esc(k.name)} не е вкъщи този ден</button>`
+            : list.length && list.every((t) => t.status === 'skipped') ? `<p class="small center" style="margin-top:10px;font-weight:900">🏕️ ${esc(k.name)} е освободена този ден · без задачи и без удръжки</p><button type="button" class="btn sm plain block" style="margin-top:8px" data-back="${k.id}">↩️ Върни задачите</button>` : ''}
         </section>`;
       }).join('')}
       ${S.kids.length ? '' : '<div class="card empty"><div class="big">👧</div>Още няма въведени деца. Виж README.md, стъпка 3.</div>'}`;
@@ -1012,6 +1023,12 @@
       }
       if (d.delTask) { await S.store.deleteTask(d.delTask); $('#modal-root').innerHTML = ''; toast('Премахната'); return refresh(true); }
       if (d.add) return addSheet(d.add);
+      if (d.away) {
+        const k = kidById(d.away);
+        if (el.dataset.armed !== '1') { el.dataset.armed = '1'; el.textContent = `Пропусни всички задачи на ${k.name} за ${fmtShort(S.day)}? Натисни пак`; return; }
+        await S.store.skipDay(d.away, S.day, true); toast(`🏕️ ${k.name} е освободена · без удръжки`); return refresh(true);
+      }
+      if (d.back) { await S.store.skipDay(d.back, S.day, false); toast('Задачите са върнати'); return refresh(true); }
       if (d.act === 'confirm-add') return confirmAdd();
       if (d.editTpl) return tplSheet(d.editTpl);
       if (d.pickEmoji) { $('#tEmoji').value = d.pickEmoji; return; }
