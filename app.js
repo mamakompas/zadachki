@@ -180,14 +180,15 @@
           const k = t.kid_id + '|' + weekStart(t.day);
           const w = map[k] || (map[k] = { kid_id: t.kid_id, week_start: weekStart(t.day), earned: 0, lost: 0, done_count: 0, missed_count: 0 });
           if (t.status === 'done') { w.earned += t.reward; w.done_count++; }
-          if (t.status === 'pending' && t.day < td) { w.lost += t.penalty; w.missed_count++; }
+          const exp = t.day === td && t.due_time && nowHM() >= t.due_time;
+          if (t.status === 'pending' && (t.day < td || exp)) { w.lost += t.due_time ? Number(db.settings.unpaid_penalty) : t.penalty; w.missed_count++; }
         }
         return delay(Object.values(map));
       },
       async ledger(kidId) { const m = me(); return delay(db.ledger.filter((l) => (!kidId || l.kid_id === kidId) && (m.role === 'parent' || l.kid_id === m.kid_id)).sort((a, b) => b.created_at.localeCompare(a.created_at))); },
       async setMyTask(id, done) {
         const t = db.tasks.find((x) => x.id === id);
-        if (!t || t.kid_id !== me().kid_id || t.day !== today() || t.status === 'skipped') throw new Error('Задачата не може да се промени');
+        if (!t || t.kid_id !== me().kid_id || t.day !== today() || t.status === 'skipped' || (t.due_time && nowHM() >= t.due_time)) throw new Error('FAM_TASK_LOCKED');
         Object.assign(t, { status: done ? 'done' : 'pending', done_at: done ? new Date().toISOString() : null }); save(); return delay(t);
       },
       async updateTask(id, patch) { if (!isParent()) deny(); Object.assign(db.tasks.find((x) => x.id === id), patch); save(); },
@@ -238,15 +239,18 @@
   const eur = (n) => { const v = r2(n); return (v < 0 ? '−' : '') + Math.abs(v).toFixed(2).replace('.', ',') + ' ' + cur(); };
 
   // ---------- статус на задача ----------
+  // Задача с час: след часа се заключва (детето не може да я отметне) и губи fam_settings.unpaid_penalty
+  const pastDue = (t) => t.day === today() && !!t.due_time && nowHM() >= t.due_time;
+  const penOf = (t) => (t.due_time ? Number(S.settings.unpaid_penalty) : Number(t.penalty));
+  const minsLeft = (t) => { const [h, m] = t.due_time.split(':').map(Number); const n = new Date(); return h * 60 + m - (n.getHours() * 60 + n.getMinutes()); };
   function stateOf(t) {
     if (t.status === 'done') return 'done';
     if (t.status === 'skipped') return 'skip';
-    const td = today();
-    if (t.day < td) return 'missed';
-    if (t.day === td && t.due_time && nowHM() >= t.due_time) return 'late';
+    if (t.day < today()) return 'missed';
+    if (pastDue(t)) return 'expired';
     return 'todo';
   }
-  const RANK = { missed: 0, late: 0, todo: 1, done: 2, skip: 3 };
+  const RANK = { missed: 0, expired: 0, todo: 1, done: 2, skip: 3 };
   const sortTasks = (list) => list.slice().sort((a, b) => RANK[stateOf(a)] - RANK[stateOf(b)] || (a.due_time || '99').localeCompare(b.due_time || '99') || a.title.localeCompare(b.title, 'bg'));
 
   // ---------- портфейл ----------
@@ -266,7 +270,7 @@
     }
     const thisWeek = out[weekStart(today())] || { earned: 0, lost: 0, bonus: 0, deduction: 0, paid: 0, net: 0, remaining: 0 };
     const atRisk = S.tasks.concat(S.weekTasks).filter((t, i, a) => a.findIndex((x) => x.id === t.id) === i)
-      .filter((t) => t.kid_id === kidId && t.day === today() && t.status === 'pending').reduce((s, t) => s + Number(t.penalty), 0);
+      .filter((t) => t.kid_id === kidId && t.day === today() && t.status === 'pending' && !pastDue(t)).reduce((s, t) => s + penOf(t), 0);
     return { balance: r2(balance), weeks: out, thisWeek, atRisk: r2(atRisk) };
   }
 
@@ -312,6 +316,7 @@
 
   function friendly(e) {
     const m = (e && (e.message || e.error_description || e.msg)) || String(e);
+    if (/FAM_TASK_LOCKED/.test(m)) return '🔒 Часът на задачата мина и тя е заключена. Ако си я свършила, кажи на родител.';
     if (/Database error saving new user|FAM_NOT_ALLOWED|FAM_WRONG_ROLE/i.test(m)) return 'Този имейл не е одобрен за избрания профил. Провери имейла и дали си избрал правилния профил.';
     if (/Invalid login credentials/i.test(m)) return 'Грешен имейл или парола.';
     if (/missing email/i.test(m)) return 'Попълни имейла.';
@@ -354,15 +359,17 @@
 
   function taskHTML(t, compact) {
     const st = stateOf(t); const meta = [];
-    if (st === 'missed') meta.push(`<span class="pill bad">💸 −${eur(t.penalty)} удържани</span>`);
+    if (st === 'missed' || st === 'expired') meta.push(`<span class="pill bad">💸 −${eur(penOf(t))} удържани</span>`);
     else if (Number(t.reward) > 0) meta.push(`<span class="pill gold">🪙 ${eur(t.reward)}</span>`);
-    else if (st === 'todo' || st === 'late') meta.push(`<span class="pill">⚠️ иначе −${eur(t.penalty)}</span>`);
-    if (t.due_time && st !== 'missed') meta.push(`<span class="pill ${st === 'late' ? 'bad' : ''}">${st === 'late' ? '⏰ Закъсняла · ' : '🕘 до '}${esc(t.due_time)}</span>`);
+    else if (st === 'todo') meta.push(`<span class="pill">⚠️ иначе −${eur(penOf(t))}</span>`);
+    if (t.due_time && st === 'expired') meta.push(`<span class="pill bad">🔒 Изтече в ${esc(t.due_time)}</span>`);
+    else if (t.due_time && st === 'todo' && t.day === today() && minsLeft(t) <= 30) meta.push(`<span class="pill bad">⏳ още ${minsLeft(t)} мин · до ${esc(t.due_time)}</span>`);
+    else if (t.due_time && st !== 'missed') meta.push(`<span class="pill">🕘 до ${esc(t.due_time)}</span>`);
     if (st === 'skip') meta.push('<span class="pill">Пропусната</span>');
     return `<button type="button" class="task ${st} ${compact ? 'compact' : ''}" data-task="${t.id}">
       ${tile(t.emoji, t.color)}
       <span class="grow"><span class="tt">${esc(t.title)}</span>${meta.length ? `<span class="meta">${meta.join('')}</span>` : ''}</span>
-      <span class="box" aria-label="${st === 'done' ? 'Свършена' : 'Несвършена'}">${st === 'done' ? '✓' : ''}</span>
+      <span class="box" aria-label="${st === 'done' ? 'Свършена' : st === 'expired' ? 'Заключена' : 'Несвършена'}">${st === 'done' ? '✓' : st === 'expired' ? '🔒' : ''}</span>
     </button>`;
   }
   function weekGrid(kidId) {
@@ -384,7 +391,7 @@
     const items = [];
     S.hist.filter((t) => t.kid_id === kidId).forEach((t) => {
       if (t.status === 'done' && Number(t.reward) > 0) items.push({ at: t.day + 'T' + (t.done_at || '').slice(11, 19), day: t.day, title: t.title, e: t.emoji, amt: Number(t.reward) });
-      if (t.status === 'pending' && t.day < td) items.push({ at: t.day + 'T23:59', day: t.day, title: 'Не е свършена: ' + t.title, e: t.emoji, amt: -Number(t.penalty) });
+      if (t.status === 'pending' && (t.day < td || pastDue(t))) items.push({ at: t.day + 'T' + (t.due_time || '23:59'), day: t.day, title: (t.due_time ? 'Не е навреме: ' : 'Не е свършена: ') + t.title, e: t.emoji, amt: -penOf(t) });
     });
     S.ledger.filter((l) => l.kid_id === kidId).forEach((l) => {
       const label = l.kind === 'payout' ? 'Изплатена заплата' : l.kind === 'bonus' ? 'Бонус' : 'Удръжка';
@@ -490,12 +497,14 @@
   }
   function kidTasksView(k) {
     const list = sortTasks(S.tasks.filter((t) => t.kid_id === k.id && t.status !== 'skipped'));
-    const late = list.filter((t) => stateOf(t) === 'late').length;
+    const exp = list.filter((t) => stateOf(t) === 'expired');
+    const soon = list.filter((t) => stateOf(t) === 'todo' && t.due_time && minsLeft(t) <= 15);
     const left = list.filter((t) => t.status !== 'done').length;
     const w = wallet(k.id);
     return kidBanner(k, true) + `
-      ${late ? `<div class="alert"><span class="big wiggle" aria-hidden="true">⏰</span>${late === 1 ? 'Една задача закъснява!' : late + ' задачи закъсняват!'}</div>`
-        : list.length && left === 0 ? `<div class="alert ok"><span class="big" aria-hidden="true">🏆</span>Супер ден! Всичко е свършено.</div>` : ''}
+      ${soon.length ? `<div class="alert"><span class="big wiggle" aria-hidden="true">⏰</span>Побързай! ${esc(soon[0].emoji)} ${esc(soon[0].title)} до ${esc(soon[0].due_time)}, иначе се заключва.</div>` : ''}
+      ${exp.length ? `<div class="alert"><span class="big" aria-hidden="true">🔒</span>${exp.length === 1 ? 'Една задача не е отметната навреме' : exp.length + ' задачи не са отметнати навреме'} · −${eur(exp.reduce((s, t) => s + penOf(t), 0))}</div>`
+        : soon.length ? '' : list.length && left === 0 ? `<div class="alert ok"><span class="big" aria-hidden="true">🏆</span>Супер ден! Всичко е свършено.</div>` : ''}
       ${w.atRisk > 0 ? `<div class="alert gold"><span class="big" aria-hidden="true">🪙</span>Ако не свършиш задачите днес, губиш ${eur(w.atRisk)} от седмицата.</div>` : ''}
       <p class="label">📋 Задачите ми днес</p>
       ${list.length ? `<div class="stack">${list.map((t) => taskHTML(t)).join('')}</div>` : (S.tasks.some((t) => t.kid_id === k.id && t.status === 'skipped') ? '<div class="card empty"><div class="big">🏕️</div>Днес си освободена от задачите. Приятно прекарване!</div>' : '<div class="card empty"><div class="big">🌤️</div>Днес нямаш задачи. Почивка!</div>')}
@@ -588,20 +597,22 @@
     extra.forEach(([d, v]) => { (groups[v] = groups[v] || []).push(DOW[d - 1]); });
     return ' · ' + [t.due_time ? `🕘 ${t.due_time}` : ''].concat(Object.entries(groups).map(([v, ds]) => `${ds.join(', ')} ${v}`)).filter(Boolean).join(', ');
   }
+  const tplTimed = (t) => !!t.due_time || Object.values(t.day_times || {}).some(Boolean);
   const penaltyOfTpl = (t) => (t.penalty != null ? Number(t.penalty) : Number(t.reward) > 0 ? Number(t.reward) : Number(S.settings.unpaid_penalty));
+  const shownPenaltyOfTpl = (t) => (tplTimed(t) ? Number(S.settings.unpaid_penalty) : penaltyOfTpl(t));
   function parentListView() {
     const row = (t) => `<button type="button" class="list-row" data-edit-tpl="${t.id}" style="${t.active ? '' : 'opacity:.5'}">
       ${tile(t.emoji, t.color)}
       <div class="grow" style="text-align:left"><b>${esc(t.title)}</b><div class="muted small">${daysText(t)}${timesText(t)}${t.kid_ids.length ? ' · ' + t.kid_ids.map((id) => esc((kidById(id) || {}).name || '')).join(', ') : ''}${t.active ? '' : ' · изключена'}</div></div>
       <div class="stack" style="gap:4px;align-items:flex-end">
         ${Number(t.reward) > 0 ? `<span class="pill gold num">🪙 ${eur(t.reward)}</span>` : ''}
-        <span class="pill num">−${eur(penaltyOfTpl(t))}</span>
+        <span class="pill num">−${eur(shownPenaltyOfTpl(t))}</span>
       </div>
     </button>`;
     const rec = S.templates.filter((t) => t.repeat_days.length);
     const man = S.templates.filter((t) => !t.repeat_days.length);
     return head('📋', 'Списък задачи', `<button type="button" class="btn sm" data-edit-tpl="new">+ Нова</button>`, '#ff8a3d') + `
-      <p class="muted small">Сумата вдясно е удръжката, ако задачата не е свършена до края на деня.</p>
+      <p class="muted small">Сумата вдясно е удръжката, ако задачата не е свършена до края на деня. Задачите с час се заключват в своя час и отнемат ${eur(S.settings.unpaid_penalty)}.</p>
       <p class="label">🔁 Появяват се сами</p>
       <div class="stack">${rec.map(row).join('') || '<p class="muted small">Няма.</p>'}</div>
       <p class="label">✋ Задавате ги, когато трябва</p>
@@ -609,7 +620,7 @@
   }
   function parentWalletsView() {
     return head('💰', 'Портфейли', '', '#e0a000') + `
-      <p class="note">Седмична заплата (понеделник – неделя). Несвършена задача с пари отнема сумата си, а задача без пари — ${eur(S.settings.unpaid_penalty)}. Седмицата не пада под 0.</p>
+      <p class="note">Седмична заплата (понеделник – неделя). Несвършена задача с пари отнема сумата си, а задача без пари — ${eur(S.settings.unpaid_penalty)}. Задача с час, която не е отметната до часа, се заключва и отнема ${eur(S.settings.unpaid_penalty)}. Седмицата не пада под 0.</p>
       ${S.kids.map((k) => {
         const w = wallet(k.id);
         return `<section class="card kidcard" style="margin-top:16px">
@@ -649,7 +660,7 @@
         <label class="field" for="sBefore">Известие преди часа на задача (минути)<input class="input" id="sBefore" type="number" min="0" max="120" step="5" value="${esc(s.before_minutes)}"></label>
         <label class="field" for="sKidTimes">Общи напомняния за децата (часове, със запетая)<input class="input" id="sKidTimes" value="${esc((s.kid_reminder_times || []).join(', '))}" placeholder="16:00, 19:00"></label>
         <label class="field" for="sParent">Вечерно напомняне за родителите<input class="input" id="sParent" type="time" value="${esc(s.parent_reminder_time || '')}"></label>
-        <label class="field" for="sPenalty">Удръжка за несвършена задача без пари (${esc(cur())})<input class="input" id="sPenalty" type="number" min="0" step="0.10" value="${esc(s.unpaid_penalty)}"></label>
+        <label class="field" for="sPenalty">Удръжка за задача без пари или с изтекъл час (${esc(cur())})<input class="input" id="sPenalty" type="number" min="0" step="0.10" value="${esc(s.unpaid_penalty)}"></label>
         <button type="submit" class="btn block">Запази</button>
       </form>
 
@@ -772,7 +783,7 @@
         <input class="input grow" id="oneTitle" placeholder="напр. Разходи кучето" aria-label="Име на задачата">
         <input class="input" id="oneReward" type="number" min="0" step="0.5" placeholder="€" style="width:80px" aria-label="Сума">
       </div>
-      <label class="field" for="addTime" style="margin-top:12px">🕘 Час (по желание, за всички избрани)<input class="input" type="time" id="addTime"><span class="muted small" style="font-weight:700">Известие ${esc(S.settings.before_minutes)} мин преди часа</span></label>
+      <label class="field" for="addTime" style="margin-top:12px">🕘 Час (по желание, за всички избрани)<input class="input" type="time" id="addTime"><span class="muted small" style="font-weight:700">Известие ${esc(S.settings.before_minutes)} мин преди часа. След часа задачата се заключва и отнема ${eur(S.settings.unpaid_penalty)}.</span></label>
       <div class="row" style="margin-top:16px">
         <button type="button" class="btn plain" data-act="close">Отказ</button>
         <button type="button" class="btn grow" data-act="confirm-add">Добави</button>
@@ -805,16 +816,16 @@
     const tpl = S.templates.find((x) => x.id === t.template_id);
     const recurring = tpl && tpl.repeat_days.includes(isoDow(t.day)) && t.day >= today();
     sheet(`<h2>${esc(t.emoji)} ${esc(t.title)}</h2>
-      <p class="muted" style="margin:-6px 0 14px">${esc(k.avatar)} ${esc(k.name)} · ${fmtShort(t.day)} · ${Number(t.reward) ? `носи ${eur(t.reward)}, ` : ''}удръжка ${eur(t.penalty)}</p>
+      <p class="muted" style="margin:-6px 0 14px">${esc(k.avatar)} ${esc(k.name)} · ${fmtShort(t.day)} · ${Number(t.reward) ? `носи ${eur(t.reward)}, ` : ''}удръжка ${eur(penOf(t))}${t.due_time ? ' (с час: след ' + esc(t.due_time) + ' се заключва)' : ''}</p>
       <div class="row" style="align-items:flex-end;margin-bottom:6px">
         <label class="field grow" for="editTime">🕘 Час на задачата<input class="input" type="time" id="editTime" value="${esc(t.due_time || '')}"></label>
         <button type="button" class="btn" data-settime="${t.id}">Запази</button>
       </div>
-      <p class="muted small" style="margin-bottom:14px">${esc(k.name)} получава известие ${esc(S.settings.before_minutes)} мин преди часа и още едно в самия час, ако не е отметнала задачата.</p>
+      <p class="muted small" style="margin-bottom:14px">${esc(k.name)} получава известие ${esc(S.settings.before_minutes)} мин преди часа. Ако не я отметне до часа, задачата се заключва и се удържат ${eur(S.settings.unpaid_penalty)}. Вие можете да я отметнете и след това.</p>
       <div class="stack">
         ${t.status === 'done'
           ? `<button type="button" class="btn plain block" data-set="${t.id}:pending">↩️ Не е свършена</button>`
-          : `<button type="button" class="btn ok block" data-set="${t.id}:done">✓ Отбележи като свършена${st === 'missed' ? ' (връща удръжката)' : ''}</button>`}
+          : `<button type="button" class="btn ok block" data-set="${t.id}:done">✓ Отбележи като свършена${st === 'missed' || st === 'expired' ? ' (връща удръжката)' : ''}</button>`}
         ${t.status === 'skipped'
           ? `<button type="button" class="btn plain block" data-set="${t.id}:pending">Върни задачата</button>`
           : `<button type="button" class="btn plain block" data-set="${t.id}:skipped">🤒 Пропусни (без пари и без удръжка)</button>`}
@@ -1009,6 +1020,7 @@
         const t = S.tasks.find((x) => x.id === d.task); if (!t) return;
         if (isParent()) return taskSheet(t);
         if (t.day !== today()) return toast('Може да отмяташ само днешните задачи');
+        if (t.due_time && nowHM() >= t.due_time) return toast(`🔒 Часът мина (${t.due_time}) и задачата е заключена. Ако си я свършила, кажи на родител.`);
         return toggleKidTask(el, t);
       }
       if (d.set) {

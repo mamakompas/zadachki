@@ -245,3 +245,7 @@ html { -webkit-text-size-adjust: 100%; }
 .mono { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 12px; word-break: break-all; font-weight: 600; }
 details summary { list-style-position: inside; }
 .banner h1 { color: #fff; }
+
+.task.expired { border-color: var(--bad); background: var(--bad-soft); }
+.task.expired .box { border-color: var(--bad); background: color-mix(in srgb, var(--bad) 18%, var(--surface)); font-size: 16px; }
+.task.expired .tt { opacity: .85; }
